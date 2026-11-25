@@ -1,0 +1,252 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum AccountStatus {
+  ACTIVE
+  LOCKED
+}
+
+enum AdminRole {
+  SUPER_ADMIN
+  ADMIN
+}
+
+enum QrType {
+  TEXT
+  URL
+  IMAGE
+  VIDEO
+  EMAIL
+  PHONE
+  SMS
+  WIFI
+  VCARD
+  LOCATION
+  WHATSAPP
+  PDF
+  DOCUMENT
+  SOCIAL
+}
+
+enum QrMode {
+  STATIC
+  DYNAMIC
+}
+
+enum QrStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum FileKind {
+  IMAGE
+  VIDEO
+  DOCUMENT
+  LOGO
+  AVATAR
+}
+
+// ---------- Tài khoản: hai bảng TÁCH BIỆT ----------
+
+model User {
+  id           String        @id @default(cuid())
+  username     String        @unique
+  email        String        @unique
+  passwordHash String        @map("password_hash")
+  avatarUrl    String?       @map("avatar_url")
+  status       AccountStatus @default(ACTIVE)
+  createdAt    DateTime      @default(now()) @map("created_at")
+  updatedAt    DateTime      @updatedAt @map("updated_at")
+  lastLoginAt  DateTime?     @map("last_login_at")
+
+  sessions  UserSession[]
+  qrCodes   QrCode[]
+  files     UploadedFile[]
+  folders   Folder[]
+  favorites Favorite[]
+
+  @@index([status])
+  @@map("users")
+}
+
+model UserAdmin {
+  id           String        @id @default(cuid())
+  username     String        @unique
+  email        String        @unique
+  passwordHash String        @map("password_hash")
+  role         AdminRole     @default(ADMIN)
+  status       AccountStatus @default(ACTIVE)
+  createdAt    DateTime      @default(now()) @map("created_at")
+  updatedAt    DateTime      @updatedAt @map("updated_at")
+  lastLoginAt  DateTime?     @map("last_login_at")
+
+  sessions AdminSession[]
+
+  @@map("user_admin")
+}
+
+// Session lưu hash SHA-256 của token, không lưu token gốc.
+model UserSession {
+  id        String    @id @default(cuid())
+  tokenHash String    @unique @map("token_hash")
+  userId    String    @map("user_id")
+  userAgent String?   @map("user_agent")
+  expiresAt DateTime  @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("user_sessions")
+}
+
+model AdminSession {
+  id        String    @id @default(cuid())
+  tokenHash String    @unique @map("token_hash")
+  adminId   String    @map("admin_id")
+  userAgent String?   @map("user_agent")
+  expiresAt DateTime  @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  admin UserAdmin @relation(fields: [adminId], references: [id], onDelete: Cascade)
+
+  @@index([adminId])
+  @@map("admin_sessions")
+}
+
+// ---------- QR, tệp, chia sẻ ----------
+
+model Folder {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  name      String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  qrCodes QrCode[]
+
+  @@index([userId])
+  @@map("folders")
+}
+
+model QrCode {
+  id        String    @id @default(cuid())
+  userId    String    @map("user_id")
+  folderId  String?   @map("folder_id")
+  name      String
+  type      QrType
+  mode      QrMode    @default(STATIC)
+  status    QrStatus  @default(ACTIVE)
+  shortCode String?   @unique @map("short_code") // chỉ có với Dynamic: /q/<shortCode>
+  content   Json // dữ liệu theo từng loại QR
+  design    Json? // cấu hình QR Designer
+  deletedAt DateTime? @map("deleted_at") // thùng rác
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  folder    Folder?      @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  analytics QrAnalytic[]
+  favorites Favorite[]
+  shareLink ShareLink?
+
+  @@index([userId, deletedAt])
+  @@index([type])
+  @@map("qr_codes")
+}
+
+// Không lưu IP đầy đủ; chỉ lưu thông tin thiết bị ở mức tổng quát.
+model QrAnalytic {
+  id         String   @id @default(cuid())
+  qrId       String   @map("qr_id")
+  scannedAt  DateTime @default(now()) @map("scanned_at")
+  deviceType String?  @map("device_type")
+  os         String?
+  browser    String?
+  country    String?
+
+  qr QrCode @relation(fields: [qrId], references: [id], onDelete: Cascade)
+
+  @@index([qrId, scannedAt])
+  @@map("qr_analytics")
+}
+
+model UploadedFile {
+  id          String   @id @default(cuid())
+  userId      String   @map("user_id")
+  kind        FileKind
+  storageKey  String   @unique @map("storage_key") // tên ngẫu nhiên trong bucket
+  mimeType    String   @map("mime_type")
+  sizeBytes   Int      @map("size_bytes")
+  displayName String?  @map("display_name")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  shareLinks ShareLink[]
+
+  @@index([userId, kind])
+  @@map("uploaded_files")
+}
+
+model ShareLink {
+  id        String    @id @default(cuid())
+  slug      String    @unique
+  fileId    String?   @map("file_id")
+  qrId      String?   @unique @map("qr_id")
+  expiresAt DateTime? @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  file UploadedFile? @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  qr   QrCode?       @relation(fields: [qrId], references: [id], onDelete: Cascade)
+
+  @@map("share_links")
+}
+
+model Favorite {
+  userId    String   @map("user_id")
+  qrId      String   @map("qr_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  qr   QrCode @relation(fields: [qrId], references: [id], onDelete: Cascade)
+
+  @@id([userId, qrId])
+  @@map("favorites")
+}
+
+// ---------- Nhật ký & cài đặt ----------
+
+// KHÔNG ghi mật khẩu, token hay dữ liệu bí mật vào metadata.
+model ActivityLog {
+  id         String   @id @default(cuid())
+  actorType  String   @map("actor_type") // USER | ADMIN | ANONYMOUS | SYSTEM
+  actorId    String?  @map("actor_id")
+  action     String
+  entityType String?  @map("entity_type")
+  entityId   String?  @map("entity_id")
+  metadata   Json?
+  ipHash     String?  @map("ip_hash")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([action, entityId, createdAt])
+  @@index([action, ipHash, createdAt])
+  @@index([actorType, actorId])
+  @@map("activity_logs")
+}
+
+model SiteSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("site_settings")
+}
